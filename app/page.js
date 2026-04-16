@@ -1,13 +1,14 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
-import { createClient } from "./lib/supabase";
+import { useState, useEffect } from "react";
+import { supabase } from "./lib/supabase";
 import { LIGHT, DARK } from "./lib/theme";
 import { PLANS } from "./data/plans";
 import { TESTIMONIALS } from "./data/testimonials";
-import { CONSTANTS } from "./data/constants";
+import { LANGS, MOODS, COSTS } from "./data/constants";
 import { t as translate } from "./lib/i18n";
-import { checkPermission } from "./lib/permissions";
+import { canShare } from "./lib/permissions";
 import { formatDate, truncate } from "./lib/utils";
+import * as db from "./lib/db";
 import Nav from "./components/Nav";
 import Sidebar from "./components/Sidebar";
 import Footer from "./components/Footer";
@@ -27,7 +28,6 @@ import PricingView from "./views/PricingView";
 import ContactView from "./views/ContactView";
 import CreditsView from "./views/CreditsView";
 import TermsView from "./views/TermsView";
-import * as db from "./lib/db";
 
 export default function Home() {
   var [darkMode, setDarkMode] = useState(false);
@@ -38,13 +38,12 @@ export default function Home() {
   var [sidebarOpen, setSidebarOpen] = useState(false);
   var [showAuth, setShowAuth] = useState(false);
   var [showPay, setShowPay] = useState(false);
-  var [showShare, setShowShare] = useState(false);
+  var [showShareModal, setShowShareModal] = useState(false);
   var [shareData, setShareData] = useState(null);
   var [toast, setToast] = useState(null);
   var [articles, setArticles] = useState([]);
   var [loading, setLoading] = useState(true);
 
-  var supabase = createClient();
   var TH = darkMode ? DARK : LIGHT;
 
   function t(key) {
@@ -66,8 +65,11 @@ export default function Home() {
     setCredits(function (prev) {
       var newVal = prev + amount;
       if (user) {
-        db.updateCredits(user.id, newVal);
-        db.logCreditTransaction(user.id, amount, amount < 0 ? "tool_usage" : "purchase");
+        if (amount < 0) {
+          db.useCredits(user.id, Math.abs(amount), "tool_usage");
+        } else {
+          db.addCredits(user.id, amount, "purchase");
+        }
       }
       return newVal;
     });
@@ -87,13 +89,12 @@ export default function Home() {
       showToast(rtl ? "سجل دخول أولاً" : "Login first", "error");
       return;
     }
-    var perm = checkPermission(user, "canShare");
-    if (!perm) {
+    if (!canShare(user)) {
       showToast(rtl ? "ترقي خطتك للمشاركة" : "Upgrade to share", "error");
       return;
     }
     setShareData(data);
-    setShowShare(true);
+    setShowShareModal(true);
   }
 
   useEffect(function () {
@@ -152,7 +153,7 @@ export default function Home() {
         xp: profile.xp || 0,
       });
       setCredits(profile.credits || 10);
-      var arts = await db.getUserArticles(authUser.id);
+      var arts = await db.getArticles(authUser.id);
       if (arts) setArticles(arts);
     } else {
       setUser({
@@ -168,7 +169,7 @@ export default function Home() {
   }
 
   async function handleLogout() {
-    await supabase.auth.signOut();
+    await db.signOut();
     showToast(rtl ? "تم تسجيل الخروج" : "Logged out", "success");
   }
 
@@ -202,6 +203,32 @@ export default function Home() {
     );
   }
 
+  var dbProxy = {
+    getUserArticles: db.getArticles,
+    getMessages: db.getContactMessages,
+    getStats: function () { return Promise.resolve({ totalUsers: 0, totalArticles: 0, totalCreditsUsed: 0 }); },
+    getApiUsage: function () { return Promise.resolve({ monthlyTokens: 0, estimatedCost: 0, balance: 5.00 }); },
+    updateApiUsage: function () { return Promise.resolve(); },
+    getAllUsers: db.getAllUsers,
+    updateUser: function (id, updates) {
+      if (updates.banned !== undefined) return db.blockUser(id, updates.banned);
+      if (updates.is_admin !== undefined) return db.makeAdmin(id, updates.is_admin);
+      return Promise.resolve();
+    },
+    updateMessage: function () { return Promise.resolve(); },
+    createMessage: function (msg) {
+      return db.sendContactMessage(user ? user.id : null, msg.type, msg.subject, msg.message);
+    },
+    getWriters: function () { return Promise.resolve([]); },
+    getCreditTransactions: function () { return Promise.resolve([]); },
+  };
+
+  var CONSTANTS_OBJ = {
+    LANGUAGES: LANGS,
+    MOODS: MOODS,
+    COSTS: COSTS,
+  };
+
   function renderView() {
     var commonProps = {
       darkMode: darkMode,
@@ -211,7 +238,7 @@ export default function Home() {
       showToast: showToast,
       t: t,
       TH: TH,
-      db: db,
+      db: dbProxy,
     };
 
     switch (view) {
@@ -230,7 +257,7 @@ export default function Home() {
           <WriterView
             {...commonProps}
             onCreditsChange={handleCreditsChange}
-            CONSTANTS={CONSTANTS}
+            CONSTANTS={CONSTANTS_OBJ}
           />
         );
       case "roast":
@@ -371,7 +398,7 @@ export default function Home() {
         />
       )}
 
-      {showShare && shareData && (
+      {showShareModal && shareData && (
         <ShareModal
           darkMode={darkMode}
           rtl={rtl}
@@ -379,7 +406,7 @@ export default function Home() {
           t={t}
           data={shareData}
           showToast={showToast}
-          onClose={function () { setShowShare(false); setShareData(null); }}
+          onClose={function () { setShowShareModal(false); setShareData(null); }}
         />
       )}
 
@@ -394,4 +421,5 @@ export default function Home() {
     </div>
   );
 }
+
 
