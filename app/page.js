@@ -180,7 +180,7 @@ export default function Home() {
   function toggleRtl() {
     setRtl(function (p) { return !p; });
   }
-  
+
   if (loading) {
     return (
       <div style={{
@@ -421,5 +421,3 @@ export default function Home() {
     </div>
   );
 }
-
-
