@@ -5,7 +5,6 @@ import { PLANS } from "./data/plans";
 import { TESTIMONIALS } from "./data/testimonials";
 import { LANGS, MOODS, COSTS } from "./data/constants";
 import { t as translate } from "./lib/i18n";
-import { canShare } from "./lib/permissions";
 import Landing from "./views/Landing";
 import WriterView from "./views/WriterView";
 import RoastView from "./views/RoastView";
@@ -20,31 +19,8 @@ import TermsView from "./views/TermsView";
 
 var safeSupabase = null;
 var safeDb = null;
-
-try {
-  var supMod = require("./lib/supabase");
-  safeSupabase = supMod.supabase;
-} catch (e) {
-  console.warn("Supabase init skipped:", e.message);
-}
-
-try {
-  safeDb = require("./lib/db");
-} catch (e) {
-  console.warn("DB init skipped:", e.message);
-}
-
-var SafeNav = null;
-var SafeSidebar = null;
-var SafeFooter = null;
-var SafeToast = null;
-var SafeAuthModal = null;
-
-try { SafeNav = require("./components/Nav").default; } catch (e) {}
-try { SafeSidebar = require("./components/Sidebar").default; } catch (e) {}
-try { SafeFooter = require("./components/Footer").default; } catch (e) {}
-try { SafeToast = require("./components/Toast").default; } catch (e) {}
-try { SafeAuthModal = require("./components/AuthModal").default; } catch (e) {}
+try { safeSupabase = require("./lib/supabase").supabase; } catch (e) {}
+try { safeDb = require("./lib/db"); } catch (e) {}
 
 export default function Home() {
   var [darkMode, setDarkMode] = useState(false);
@@ -52,11 +28,15 @@ export default function Home() {
   var [user, setUser] = useState(null);
   var [credits, setCredits] = useState(10);
   var [view, setView] = useState("landing");
-  var [sidebarOpen, setSidebarOpen] = useState(false);
+  var [showMenu, setShowMenu] = useState(false);
   var [showAuth, setShowAuth] = useState(false);
+  var [authMode, setAuthMode] = useState("login");
+  var [authEmail, setAuthEmail] = useState("");
+  var [authPass, setAuthPass] = useState("");
+  var [authName, setAuthName] = useState("");
+  var [authLoading, setAuthLoading] = useState(false);
   var [toast, setToast] = useState(null);
   var [articles, setArticles] = useState([]);
-  var [error, setError] = useState(null);
 
   var TH = darkMode ? DARK : LIGHT;
 
@@ -70,128 +50,78 @@ export default function Home() {
     setTimeout(function () { setToast(null); }, 3000);
   }
 
-  function navigate(newView) {
-    setView(newView);
-    setSidebarOpen(false);
+  function navigate(v) {
+    setView(v);
+    setShowMenu(false);
     window.scrollTo(0, 0);
   }
 
   function handleCreditsChange(amount) {
-    setCredits(function (prev) {
-      var newVal = prev + amount;
-      if (user && safeDb) {
-        try {
-          if (amount < 0) {
-            safeDb.useCredits(user.id, Math.abs(amount), "tool_usage");
-          } else {
-            safeDb.addCredits(user.id, amount, "purchase");
-          }
-        } catch (e) { console.warn("Credits error:", e); }
-      }
-      return newVal;
-    });
-  }
-
-  function handleDeleteArticle(articleId) {
-    if (safeDb) {
-      safeDb.deleteArticle(articleId).then(function () {
-        setArticles(function (prev) {
-          return prev.filter(function (a) { return a.id !== articleId; });
-        });
-        showToast(rtl ? "تم حذف المقال" : "Article deleted", "success");
-      });
-    }
+    setCredits(function (prev) { return prev + amount; });
   }
 
   useEffect(function () {
     try {
-      var savedDark = localStorage.getItem("oxquill_dark");
-      var savedRtl = localStorage.getItem("oxquill_rtl");
-      if (savedDark === "true") setDarkMode(true);
-      if (savedRtl === "true") setRtl(true);
+      if (localStorage.getItem("oxquill_dark") === "true") setDarkMode(true);
+      if (localStorage.getItem("oxquill_rtl") === "true") setRtl(true);
     } catch (e) {}
 
     if (safeSupabase) {
       try {
-        safeSupabase.auth.getSession().then(function (result) {
-          var session = result.data.session;
-          if (session && session.user) {
-            loadUser(session.user);
-          }
+        safeSupabase.auth.getSession().then(function (r) {
+          if (r.data.session && r.data.session.user) loadUser(r.data.session.user);
         });
-
-        safeSupabase.auth.onAuthStateChange(function (event, session) {
-          if (event === "SIGNED_IN" && session && session.user) {
-            loadUser(session.user);
-            setShowAuth(false);
-            navigate("writer");
-          }
-          if (event === "SIGNED_OUT") {
-            setUser(null);
-            setCredits(10);
-            setArticles([]);
-            navigate("landing");
-          }
+        safeSupabase.auth.onAuthStateChange(function (ev, session) {
+          if (ev === "SIGNED_IN" && session) { loadUser(session.user); setShowAuth(false); navigate("writer"); }
+          if (ev === "SIGNED_OUT") { setUser(null); setCredits(10); navigate("landing"); }
         });
-      } catch (e) {
-        console.warn("Auth error:", e);
-      }
+      } catch (e) {}
     }
   }, []);
 
-  useEffect(function () {
-    try { localStorage.setItem("oxquill_dark", darkMode); } catch (e) {}
-  }, [darkMode]);
+  useEffect(function () { try { localStorage.setItem("oxquill_dark", darkMode); } catch (e) {} }, [darkMode]);
+  useEffect(function () { try { localStorage.setItem("oxquill_rtl", rtl); } catch (e) {} }, [rtl]);
 
-  useEffect(function () {
-    try { localStorage.setItem("oxquill_rtl", rtl); } catch (e) {}
-  }, [rtl]);
-
-  async function loadUser(authUser) {
+  async function loadUser(au) {
     if (!safeDb) return;
     try {
-      var profile = await safeDb.getProfile(authUser.id);
-      if (profile) {
-        setUser({
-          id: authUser.id,
-          email: authUser.email,
-          name: profile.full_name || authUser.user_metadata.full_name || "",
-          plan: profile.plan || "free",
-          is_admin: profile.is_admin || false,
-          banned: profile.banned || false,
-          xp: profile.xp || 0,
-        });
-        setCredits(profile.credits || 10);
-        var arts = await safeDb.getArticles(authUser.id);
-        if (arts) setArticles(arts);
+      var p = await safeDb.getProfile(au.id);
+      if (p) {
+        setUser({ id: au.id, email: au.email, name: p.full_name || "", plan: p.plan || "free", is_admin: p.is_admin || false, xp: p.xp || 0 });
+        setCredits(p.credits || 10);
       } else {
-        setUser({
-          id: authUser.id,
-          email: authUser.email,
-          name: authUser.user_metadata.full_name || "",
-          plan: "free",
-          is_admin: authUser.email === "aanour1985@gmail.com",
-          banned: false,
-          xp: 0,
-        });
+        setUser({ id: au.id, email: au.email, name: au.user_metadata.full_name || "", plan: "free", is_admin: au.email === "aanour1985@gmail.com", xp: 0 });
       }
-    } catch (e) {
-      console.warn("Load user error:", e);
-    }
+    } catch (e) {}
+  }
+
+  async function handleLogin() {
+    if (!safeDb) { showToast("DB not ready", "error"); return; }
+    if (!authEmail || !authPass) { showToast(rtl ? "اكتب البريد والباسورد" : "Enter email & password", "error"); return; }
+    setAuthLoading(true);
+    try {
+      var r = await safeDb.signIn(authEmail, authPass);
+      if (r && r.error) showToast(r.error.message, "error");
+    } catch (e) { showToast(e.message, "error"); }
+    setAuthLoading(false);
+  }
+
+  async function handleSignup() {
+    if (!safeDb) { showToast("DB not ready", "error"); return; }
+    if (!authEmail || !authPass || !authName) { showToast(rtl ? "اكتب كل البيانات" : "Fill all fields", "error"); return; }
+    setAuthLoading(true);
+    try {
+      var r = await safeDb.signUp(authEmail, authPass, authName, "neutral");
+      if (r && r.error) showToast(r.error.message, "error");
+      else showToast(rtl ? "تم التسجيل! أكد بريدك" : "Signed up! Check email", "success");
+    } catch (e) { showToast(e.message, "error"); }
+    setAuthLoading(false);
   }
 
   async function handleLogout() {
-    if (safeDb) {
-      try { await safeDb.signOut(); } catch (e) {}
-    }
-    setUser(null);
-    setCredits(10);
-    navigate("landing");
-    showToast(rtl ? "تم تسجيل الخروج" : "Logged out", "success");
+    if (safeDb) try { await safeDb.signOut(); } catch (e) {}
+    setUser(null); setCredits(10); navigate("landing");
   }
-
-  function toggleDark() { setDarkMode(function (p) { return !p; }); }
-  function toggleRtl() { setRtl(function (p) { return !p; }); }
 
   var dbProxy = {
     getUserArticles: safeDb ? safeDb.getArticles : function () { return Promise.resolve([]); },
@@ -200,116 +130,139 @@ export default function Home() {
     getApiUsage: function () { return Promise.resolve({ monthlyTokens: 0, estimatedCost: 0, balance: 5.00 }); },
     updateApiUsage: function () { return Promise.resolve(); },
     getAllUsers: safeDb ? safeDb.getAllUsers : function () { return Promise.resolve([]); },
-    updateUser: function (id, updates) {
+    updateUser: function (id, u) {
       if (!safeDb) return Promise.resolve();
-      if (updates.banned !== undefined) return safeDb.blockUser(id, updates.banned);
-      if (updates.is_admin !== undefined) return safeDb.makeAdmin(id, updates.is_admin);
+      if (u.banned !== undefined) return safeDb.blockUser(id, u.banned);
+      if (u.is_admin !== undefined) return safeDb.makeAdmin(id, u.is_admin);
       return Promise.resolve();
     },
     updateMessage: function () { return Promise.resolve(); },
-    createMessage: function (msg) {
+    createMessage: function (m) {
       if (!safeDb) return Promise.resolve();
-      return safeDb.sendContactMessage(user ? user.id : null, msg.type, msg.subject, msg.message);
+      return safeDb.sendContactMessage(user ? user.id : null, m.type, m.subject, m.message);
     },
     getWriters: function () { return Promise.resolve([]); },
     getCreditTransactions: function () { return Promise.resolve([]); },
   };
 
-  var CONSTANTS_OBJ = {
-    LANGUAGES: LANGS || [],
-    MOODS: MOODS || [],
-    COSTS: COSTS || {},
-  };
-
   var commonProps = {
-    darkMode: darkMode,
-    rtl: rtl,
-    user: user,
-    credits: credits,
-    showToast: showToast,
-    t: t,
-    TH: TH,
-    db: dbProxy,
+    darkMode: darkMode, rtl: rtl, user: user, credits: credits,
+    showToast: showToast, t: t, TH: TH, db: dbProxy,
   };
 
-  function renderView() {
-    try {
-      switch (view) {
-        case "writer":
-          return <WriterView {...commonProps} onCreditsChange={handleCreditsChange} CONSTANTS={CONSTANTS_OBJ} />;
-        case "roast":
-          return <RoastView {...commonProps} onCreditsChange={handleCreditsChange} />;
-        case "battle":
-          return <BattleView {...commonProps} onCreditsChange={handleCreditsChange} />;
-        case "profile":
-          return <ProfileView {...commonProps} articles={articles} onDeleteArticle={handleDeleteArticle} />;
-        case "admin":
-          if (!user || !user.is_admin) { navigate("landing"); return null; }
-          return <AdminView {...commonProps} />;
-        case "writers":
-          return <WritersView {...commonProps} />;
-        case "pricing":
-          return <PricingView {...commonProps} onNavigate={navigate} onLogin={function () { setShowAuth(true); }} PLANS={PLANS} />;
-        case "credits":
-          return <CreditsView {...commonProps} onNavigate={navigate} />;
-        case "contact":
-          return <ContactView {...commonProps} />;
-        case "terms":
-          return <TermsView {...commonProps} />;
-        default:
-          return <Landing {...commonProps} onNavigate={navigate} onLogin={function () { setShowAuth(true); }} PLANS={PLANS} TESTIMONIALS={TESTIMONIALS} />;
-      }
-    } catch (e) {
-      return <div style={{ padding: "100px 20px", textAlign: "center", color: "#EF4444" }}>Error: {e.message}</div>;
-    }
-  }
+  var menuItems = user
+    ? [
+        { id: "writer", label: "✍️ Writer" },
+        { id: "roast", label: "🔥 Roast" },
+        { id: "battle", label: "⚔️ Battle" },
+        { id: "writers", label: "👥 Writers" },
+        { id: "profile", label: "👤 Profile" },
+        { id: "credits", label: "🪙 Credits" },
+        { id: "pricing", label: "💎 Pricing" },
+        { id: "contact", label: "📩 Contact" },
+      ]
+    : [
+        { id: "pricing", label: "💎 Pricing" },
+        { id: "contact", label: "📩 Contact" },
+      ];
+
+  if (user && user.is_admin) menuItems.push({ id: "admin", label: "🛡️ Admin" });
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: TH.bg,
-      color: TH.text,
-      fontFamily: "'Plus Jakarta Sans', sans-serif",
-      direction: rtl ? "rtl" : "ltr",
-    }}>
-      {SafeNav && (
-        <SafeNav darkMode={darkMode} rtl={rtl} user={user} credits={credits} TH={TH} t={t}
-          onToggleSidebar={function () { setSidebarOpen(function (p) { return !p; }); }}
-          onToggleDark={toggleDark} onToggleRtl={toggleRtl} onNavigate={navigate}
-          onLogin={function () { setShowAuth(true); }} onLogout={handleLogout}
-        />
+    <div style={{ minHeight: "100vh", background: TH.bg, color: TH.text, fontFamily: "'Plus Jakarta Sans', sans-serif", direction: rtl ? "rtl" : "ltr" }}>
+
+      {/* === NAV === */}
+      <nav style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 100, background: TH.card, borderBottom: "1px solid " + TH.border, padding: "0 16px", height: "56px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <button onClick={function () { setShowMenu(!showMenu); }} style={{ background: "none", border: "none", fontSize: "1.3rem", cursor: "pointer", color: TH.text }}>☰</button>
+          <span onClick={function () { navigate("landing"); }} style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 800, fontSize: "1.2rem", cursor: "pointer", color: TH.text }}>✍️ OxQuill</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {user && <span style={{ fontSize: "0.8rem", color: "#5B6CF0", fontWeight: 700 }}>{credits} 🪙</span>}
+          <button onClick={function () { setDarkMode(!darkMode); }} style={{ background: "none", border: "none", fontSize: "1.1rem", cursor: "pointer" }}>{darkMode ? "☀️" : "🌙"}</button>
+          <button onClick={function () { setRtl(!rtl); }} style={{ background: "none", border: "none", fontSize: "0.8rem", cursor: "pointer", color: TH.textSec, fontWeight: 700 }}>{rtl ? "EN" : "AR"}</button>
+          {user
+            ? <button onClick={handleLogout} style={{ background: "none", border: "1px solid #EF4444", color: "#EF4444", padding: "4px 12px", borderRadius: "8px", fontSize: "0.8rem", cursor: "pointer" }}>{rtl ? "خروج" : "Logout"}</button>
+            : <button onClick={function () { setShowAuth(true); }} style={{ background: "#5B6CF0", border: "none", color: "#fff", padding: "6px 16px", borderRadius: "8px", fontSize: "0.85rem", fontWeight: 700, cursor: "pointer" }}>{rtl ? "دخول" : "Login"}</button>
+          }
+        </div>
+      </nav>
+
+      {/* === MENU === */}
+      {showMenu && (
+        <div style={{ position: "fixed", top: "56px", left: 0, right: 0, bottom: 0, zIndex: 99 }}>
+          <div onClick={function () { setShowMenu(false); }} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.3)" }} />
+          <div style={{ position: "relative", background: TH.card, borderBottom: "1px solid " + TH.border, padding: "8px 0", maxWidth: "300px" }}>
+            {menuItems.map(function (item) {
+              return (
+                <button key={item.id} onClick={function () { navigate(item.id); }} style={{ display: "block", width: "100%", padding: "12px 20px", background: view === item.id ? "rgba(91,108,240,0.1)" : "transparent", border: "none", color: view === item.id ? "#5B6CF0" : TH.text, fontSize: "0.95rem", fontWeight: view === item.id ? 700 : 500, cursor: "pointer", textAlign: rtl ? "right" : "left" }}>
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       )}
 
-      {SafeSidebar && (
-        <SafeSidebar darkMode={darkMode} rtl={rtl} user={user} credits={credits}
-          isOpen={sidebarOpen} TH={TH} t={t}
-          onClose={function () { setSidebarOpen(false); }}
-          onNavigate={navigate} onLogin={function () { setShowAuth(true); }} onLogout={handleLogout}
-        />
-      )}
-
-      <main style={{ minHeight: "calc(100vh - 140px)" }}>
-        {renderView()}
+      {/* === MAIN === */}
+      <main style={{ paddingTop: "56px", minHeight: "calc(100vh - 100px)" }}>
+        {view === "landing" && <Landing {...commonProps} onNavigate={navigate} onLogin={function () { setShowAuth(true); }} PLANS={PLANS} TESTIMONIALS={TESTIMONIALS} />}
+        {view === "writer" && <WriterView {...commonProps} onCreditsChange={handleCreditsChange} CONSTANTS={{ LANGUAGES: LANGS, MOODS: MOODS, COSTS: COSTS }} />}
+        {view === "roast" && <RoastView {...commonProps} onCreditsChange={handleCreditsChange} />}
+        {view === "battle" && <BattleView {...commonProps} onCreditsChange={handleCreditsChange} />}
+        {view === "profile" && <ProfileView {...commonProps} articles={articles} onDeleteArticle={function () {}} />}
+        {view === "admin" && <AdminView {...commonProps} />}
+        {view === "writers" && <WritersView {...commonProps} />}
+        {view === "pricing" && <PricingView {...commonProps} onNavigate={navigate} onLogin={function () { setShowAuth(true); }} PLANS={PLANS} />}
+        {view === "credits" && <CreditsView {...commonProps} onNavigate={navigate} />}
+        {view === "contact" && <ContactView {...commonProps} />}
+        {view === "terms" && <TermsView {...commonProps} />}
       </main>
 
-      {SafeFooter && (
-        <SafeFooter darkMode={darkMode} rtl={rtl} TH={TH} t={t}
-          onToggleDark={toggleDark} onToggleRtl={toggleRtl} onNavigate={navigate}
-        />
+      {/* === AUTH MODAL === */}
+      {showAuth && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div onClick={function () { setShowAuth(false); }} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)" }} />
+          <div style={{ position: "relative", background: TH.card, borderRadius: "20px", padding: "32px 24px", width: "90%", maxWidth: "400px", border: "1px solid " + TH.border }}>
+            <button onClick={function () { setShowAuth(false); }} style={{ position: "absolute", top: "12px", right: "16px", background: "none", border: "none", fontSize: "1.3rem", cursor: "pointer", color: TH.textSec }}>✕</button>
+            <h2 style={{ textAlign: "center", marginBottom: "24px", fontFamily: "'Source Serif 4', serif", color: TH.text }}>{authMode === "login" ? (rtl ? "تسجيل دخول" : "Login") : (rtl ? "حساب جديد" : "Sign Up")}</h2>
+
+            {authMode === "signup" && (
+              <input value={authName} onChange={function (e) { setAuthName(e.target.value); }} placeholder={rtl ? "الاسم" : "Name"} style={{ width: "100%", padding: "12px", borderRadius: "10px", border: "1px solid " + TH.border, background: TH.bg, color: TH.text, marginBottom: "12px", boxSizing: "border-box" }} />
+            )}
+            <input value={authEmail} onChange={function (e) { setAuthEmail(e.target.value); }} placeholder={rtl ? "البريد" : "Email"} type="email" style={{ width: "100%", padding: "12px", borderRadius: "10px", border: "1px solid " + TH.border, background: TH.bg, color: TH.text, marginBottom: "12px", boxSizing: "border-box" }} />
+            <input value={authPass} onChange={function (e) { setAuthPass(e.target.value); }} placeholder={rtl ? "كلمة السر" : "Password"} type="password" style={{ width: "100%", padding: "12px", borderRadius: "10px", border: "1px solid " + TH.border, background: TH.bg, color: TH.text, marginBottom: "16px", boxSizing: "border-box" }} />
+
+            <button onClick={authMode === "login" ? handleLogin : handleSignup} disabled={authLoading} style={{ width: "100%", padding: "14px", borderRadius: "12px", border: "none", background: "linear-gradient(135deg, #5B6CF0, #9B7BF0)", color: "#fff", fontSize: "1rem", fontWeight: 700, cursor: "pointer", marginBottom: "12px" }}>
+              {authLoading ? "..." : authMode === "login" ? (rtl ? "دخول" : "Login") : (rtl ? "تسجيل" : "Sign Up")}
+            </button>
+
+            <p style={{ textAlign: "center", color: TH.textSec, fontSize: "0.85rem" }}>
+              {authMode === "login" ? (rtl ? "مفيش حساب؟ " : "No account? ") : (rtl ? "عندك حساب؟ " : "Have account? ")}
+              <span onClick={function () { setAuthMode(authMode === "login" ? "signup" : "login"); }} style={{ color: "#5B6CF0", cursor: "pointer", fontWeight: 700 }}>
+                {authMode === "login" ? (rtl ? "سجل" : "Sign up") : (rtl ? "ادخل" : "Login")}
+              </span>
+            </p>
+          </div>
+        </div>
       )}
 
-      {showAuth && SafeAuthModal && (
-        <SafeAuthModal darkMode={darkMode} rtl={rtl} TH={TH} t={t}
-          supabase={safeSupabase} showToast={showToast}
-          onClose={function () { setShowAuth(false); }}
-        />
+      {/* === TOAST === */}
+      {toast && (
+        <div style={{ position: "fixed", bottom: "24px", left: "50%", transform: "translateX(-50%)", background: toast.type === "error" ? "#EF4444" : toast.type === "success" ? "#22C55E" : "#3B82F6", color: "#fff", padding: "12px 24px", borderRadius: "12px", fontSize: "0.9rem", fontWeight: 600, zIndex: 300, boxShadow: "0 4px 20px rgba(0,0,0,0.2)" }}>
+          {toast.message}
+        </div>
       )}
 
-      {toast && SafeToast && (
-        <SafeToast message={toast.message} type={toast.type}
-          onClose={function () { setToast(null); }} TH={TH}
-        />
-      )}
+      {/* === FOOTER === */}
+      <footer style={{ borderTop: "1px solid " + TH.border, padding: "24px 16px", textAlign: "center" }}>
+        <div style={{ display: "flex", justifyContent: "center", gap: "16px", marginBottom: "12px", flexWrap: "wrap" }}>
+          {["pricing", "contact", "terms"].map(function (id) {
+            return <span key={id} onClick={function () { navigate(id); }} style={{ color: TH.textSec, fontSize: "0.85rem", cursor: "pointer" }}>{id === "pricing" ? "💎 Pricing" : id === "contact" ? "📩 Contact" : "📜 Terms"}</span>;
+          })}
+        </div>
+        <p style={{ color: TH.textSec, fontSize: "0.8rem" }}>© 2024 OxQuill. All rights reserved.</p>
+      </footer>
     </div>
   );
 }
